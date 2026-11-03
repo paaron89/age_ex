@@ -27,8 +27,8 @@ Each phase gets its own feature branch and is merged before the next one starts.
 
 | # | Phase | Branch | Deliverable | Done when |
 |---|---|---|---|---|
-| 1 | **Planning** | `planning` | This `docs/vision.md` | Open questions in §5 are answered and the stack is confirmed |
-| 2 | **Project setup** | tbd | TS/Node project, Playwright installed, CLI skeleton that accepts a URL and opens the page | `npx smoke-agent <url>` opens the page and prints its status |
+| 1 | ✅ **Planning** | `planning` | This `docs/vision.md` | Open questions in §5 are answered and the stack is confirmed |
+| 2 | ✅ **Project setup** | `project-setup` | TS/Node project, Playwright installed, CLI skeleton that accepts a URL and opens the page | `npx smoke-agent <url>` opens the page and prints its status |
 | 3 | **Core check logic** | tbd | Discover links and buttons, check them, collect results as structured JSON, enforce the 60s deadline | The run produces a `results.json` within 60s on a sample page |
 | 4 | **HTML reporter** | tbd | Generate `report.html` from the results JSON | The report shows all checks, timings and the summary |
 | 5 | **Hardening** | tbd | Destructive-button safety, exit codes, `--headed` flag, tests for the agent itself, README usage | Runs reliably on 3–5 real pages |
@@ -116,3 +116,5 @@ That way a future UI, or a team's Playwright suite (`smokeCheck(page)`), can cal
 | 2026-11-03 | Develop against the URL passed on the CLI | No fixed target page; the user supplies it |
 | 2026-11-03 | Stack: TypeScript/Node, Playwright, Chromium, `commander` | Confirmed; other browsers come later as an option |
 | 2026-11-03 | Keep the core logic separate from the CLI | Lets a future UI and test-framework integration reuse the core |
+| 2026-11-03 | A 4xx/5xx main document counts as "page didn't load" (exit 2); usage errors also exit 2 | Exit 1 stays reserved for failed link/button checks |
+| 2026-11-03 | `--out` deferred to Phase 4 | No report to write before Phase 4 |
