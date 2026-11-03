@@ -46,11 +46,23 @@ Later phases come from the backlog in §6.
 
 **Direction:** keep a **deterministic core** and add an **optional LLM layer later** for things a script can't judge: whether a click did something meaningful, exploring journeys, and summarizing bugs.
 
-### Stack (proposal, to confirm)
-- **TypeScript / Node.** Playwright's first-class language, and it's easy to publish as an npm CLI later.
-- **`playwright`,** Chromium only for v1
+### Stack (confirmed)
+- **TypeScript / Node.** Playwright's first-class language, and it's easy to publish as an npm package later.
+- **`playwright`, Chromium only for v1.** Other browsers (Firefox, WebKit) come later, offered as an option such as `--browser`.
 - **Report:** a self-contained HTML file generated from the JSON results
-- **CLI:** `commander` or plain `process.argv`
+- **CLI:** `commander`. In v1 the command line is the only entry point.
+
+### Architecture principle: core ≠ CLI
+A UI and test-framework integration are planned for later, so the check logic must **not** live inside the CLI:
+
+```
+src/
+  core/      ← runSmokeCheck(url, options) → results object (no CLI, no console output, no process.exit)
+  reporter/  ← results → HTML (Phase 4)
+  cli/       ← thin commander wrapper: parse args → core → reporter → exit code
+```
+
+That way a future UI, or a team's Playwright suite (`smokeCheck(page)`), can call `core` directly without going through the command line.
 
 ### Rough flow
 1. Launch the browser and open the URL (record status and console errors)
@@ -60,17 +72,26 @@ Later phases come from the backlog in §6.
 5. Enforce the global 60s deadline (per-check timeouts plus an overall abort)
 6. Write the results (Phase 3), then the HTML report (Phase 4)
 
-## 5. Open questions (answer in Phase 1)
+## 5. Open questions (answered in Phase 1)
 
-- [ ] **What does "a button works" mean?** It's clickable, there's no JS error after the click, *and* something happens (navigation, DOM change, network request)? Is "nothing happened" a fail or a warning?
-- [ ] **Destructive buttons** ("Delete", "Logout", "Buy", form submits): skip them using a keyword denylist?
-- [ ] **External links:** check them, or only same-origin ones? Is a blocked third party a warning or a fail?
-- [ ] **Hidden elements:** check only visible ones? What about elements inside menus or modals?
-- [ ] **Duplicate links:** check each unique href only once?
-- [ ] **Exit code:** non-zero when any check fails (for CI later)?
-- [ ] **Headless by default,** with a `--headed` flag?
-- [ ] **Report location:** `./reports/<host>-<timestamp>.html`?
-- [ ] **Test target:** which real page(s) do we develop against?
+- [x] **What does "a button works" mean?**
+  → **PASS** = the click raises no JS error **and** something happens (navigation, DOM change, network request or dialog). If there's no error but nothing happens, it's a **WARNING**. A JS error or crash is a **FAIL**.
+- [x] **Risky buttons** ("Delete", "Logout", "Buy", "Pay", "Submit", "Unsubscribe", …):
+  → **Skip them via a keyword denylist, but log every skipped button.** Each one goes into the run log and the report as **SKIPPED (risky)**, with its text or label, selector and the matched keyword, so the tester can check them by hand.
+- [x] **External links:**
+  → **Check all links.** A broken same-origin link is a **FAIL**; a failing or blocked external link (bot protection, timeout) is a **WARNING**.
+- [x] **Hidden elements:**
+  → **Visible only.** Hidden links are still checked over HTTP (no click needed). Hidden buttons are listed as **SKIPPED (not visible)**. Revealing menus and modals is backlog.
+- [x] **Duplicate links:**
+  → **Check each unique URL once,** and show in the report how many times it appears on the page.
+- [x] **Exit code:**
+  → `0` = no fails (warnings OK), `1` = at least one check failed, `2` = the tool crashed or the page didn't load.
+- [x] **Headless?**
+  → **Headless by default,** with `--headed` to watch the browser.
+- [x] **Report location:**
+  → `./reports/<host>-<timestamp>.html` (a new file per run; `reports/` is git-ignored). `--out <path>` overrides it.
+- [x] **Test target:**
+  → **The URL passed on the command line.** There's no fixed target page; we develop and verify against whatever URL is given. (Idea for Phase 5: add a small local fixture page with known-broken links and buttons for automated self-tests.)
 
 ## 6. Backlog (later phases)
 
@@ -79,6 +100,7 @@ Later phases come from the backlog in §6.
 - **Framework integration:** an npm package or Playwright fixture (`smokeCheck(page)`) that teams use in their own suites and CI
 - **Richer report:** screenshots or video of failures, trends across runs, filtering, JUnit export
 - **Config file** (`smoke.config.json`) for denylists, timeouts and selectors
+- **Other browsers:** Firefox and WebKit via a `--browser` option
 
 ## 7. Decision log
 
@@ -86,3 +108,11 @@ Later phases come from the backlog in §6.
 |---|---|---|
 | 2026-11-03 | Start with a deterministic Playwright core; defer LLM agents | Speed, cost and repeatability within the 1-min budget |
 | 2026-11-03 | Split the work into phases, one feature branch each | Keeps changes small and reviewable |
+| 2026-11-03 | Button PASS = no error + reaction; no reaction = WARNING | Catches dead buttons without failing harmless ones such as toggles or tooltips |
+| 2026-11-03 | Skip risky buttons via a denylist, logging each skipped one | Avoids side effects on real sites while keeping full visibility |
+| 2026-11-03 | Check all links; external failures are warnings | Third-party sites often block bots, so their failures shouldn't fail the run |
+| 2026-11-03 | Visible elements only; check duplicate URLs once | Keeps the run within the 1-min budget |
+| 2026-11-03 | Exit codes 0/1/2, headless by default, reports in `./reports/` | Ready for CI later |
+| 2026-11-03 | Develop against the URL passed on the CLI | No fixed target page; the user supplies it |
+| 2026-11-03 | Stack: TypeScript/Node, Playwright, Chromium, `commander` | Confirmed; other browsers come later as an option |
+| 2026-11-03 | Keep the core logic separate from the CLI | Lets a future UI and test-framework integration reuse the core |
