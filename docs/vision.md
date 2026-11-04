@@ -30,7 +30,7 @@ Each phase gets its own feature branch and is merged before the next one starts.
 | 1 | ✅ **Planning** | `planning` | This `docs/vision.md` | Open questions in §5 are answered and the stack is confirmed |
 | 2 | ✅ **Project setup** | `project-setup` | TS/Node project, Playwright installed, CLI skeleton that accepts a URL and opens the page | `npx smoke-agent <url>` opens the page and prints its status |
 | 3 | ✅ **Core check logic** | `core-checks` | Discover links and buttons, check them (including the risky-button denylist), collect results as structured JSON, enforce the 60s deadline | The run produces a results JSON within 60s on a sample page, and exit code 1 on failed checks |
-| 4 | **HTML reporter** | tbd | Generate `report.html` from the results JSON; add `--out` | The report shows all checks, timings and the summary |
+| 4 | ✅ **HTML reporter** | `html-report` | Generate `report.html` from the results JSON; add `--out` | The report shows all checks, timings and the summary |
 | 5 | **AI layer (`--ai`)** | tbd | Optional Claude-powered step on top of the deterministic results (see §4, "AI roadmap") | With `--ai`, warnings are triaged, risky buttons are classified by context, and the report has an AI summary; without `--ai`, nothing changes |
 | 6 | **Hardening** | tbd | Self-tests against a local fixture page, edge cases (iframes, SPAs, slow pages), README polish | Runs reliably on 3–5 real pages |
 
@@ -137,3 +137,6 @@ That way a future UI, or a team's Playwright suite (`smokeCheck(page)`), can cal
 | 2026-11-04 | Buttons are clicked one at a time; the page is reloaded after any click that navigated or changed the DOM | Every button is tested from the same starting state |
 | 2026-11-04 | A click is a FAIL on an uncaught JS error, when the button can't be clicked, or when it navigates to a 4xx/5xx page | Extends "no JS error" with the two most common real breakages |
 | 2026-11-04 | Phase 3 writes the results JSON to `reports/<host>-<timestamp>.json` | The HTML report (Phase 4) is built from this file |
+| 2026-11-04 | `-t, --timeout <seconds>` CLI option (5–60, default 60) | Lets the tester shorten the run; 60 s stays the maximum |
+| 2026-11-04 | Each run writes the HTML report and the JSON side by side; `--out` takes a folder, or a file path ending in `.html` | One file for people, one for tools (CI, a future UI or the AI layer) |
+| 2026-11-04 | The report is a single self-contained file that escapes all page content, with a strict CSP | Easy to share or attach to a ticket, and a tested page can't inject script into it |

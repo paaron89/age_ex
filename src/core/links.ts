@@ -64,7 +64,7 @@ export async function discoverLinks(page: Page): Promise<LinkCheck[]> {
       texts: link.text ? [link.text] : [],
       occurrences: 1,
       visible: link.visible,
-      external: kind !== 'anchor' && !isSameSite(url, pageUrl),
+      external: kind === 'http' && !isSameSite(url, pageUrl),
       status: 'not-checked',
     });
   }

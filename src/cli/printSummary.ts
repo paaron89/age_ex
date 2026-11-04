@@ -1,10 +1,16 @@
 import type { ButtonCheck, LinkCheck, SmokeResult, StatusCounts } from '../core/index.js';
 
+/** Where the CLI saved the report files. */
+export interface SavedFiles {
+  html: string;
+  json: string;
+}
+
 /** Max lines printed per list; the full details are in the results JSON. */
 const MAX_LINES = 15;
 
 /** Prints a human-readable summary of a smoke run to stdout. */
-export function printSummary(r: SmokeResult, resultsPath: string | null): void {
+export function printSummary(r: SmokeResult, saved: SavedFiles | null): void {
   const out: string[] = [`\nSmoke check: ${r.url}`];
   const { page } = r;
 
@@ -39,7 +45,7 @@ export function printSummary(r: SmokeResult, resultsPath: string | null): void {
 
   section(out, 'Not checked: time budget ran out', items.filter((i) => i.status === 'not-checked'));
 
-  if (resultsPath) out.push(`\nResults saved to ${resultsPath}`);
+  if (saved) out.push(`\nReport:  ${saved.html}\nJSON:    ${saved.json}`);
   out.push(`\nResult: ${verdict(r)}\n`);
   console.log(out.join('\n'));
 }
@@ -62,7 +68,7 @@ function section(out: string[], title: string, items: Item[]): void {
   if (items.length === 0) return;
   out.push(`\n${title} (${items.length})`);
   for (const i of items.slice(0, MAX_LINES)) out.push(`  - ${i.line}`);
-  if (items.length > MAX_LINES) out.push(`  … and ${items.length - MAX_LINES} more (see the results JSON)`);
+  if (items.length > MAX_LINES) out.push(`  … and ${items.length - MAX_LINES} more (see the HTML report)`);
 }
 
 function counts(c: StatusCounts): string {

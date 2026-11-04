@@ -2,7 +2,7 @@
 
 A command-line tool that smoke-tests a single web page with Playwright. It checks that the page loads and that its links and buttons work, then writes a simple HTML report. The whole run is capped at **1 minute**.
 
-> **Status: Phase 3 (core checks).** The tool checks the page's links and buttons and saves the results as JSON. The HTML report comes in Phase 4 and an optional AI mode (`--ai`) in Phase 5. See [docs/vision.md](docs/vision.md) for the full plan.
+> **Status: Phase 4 (HTML report).** The tool checks the page's links and buttons and writes an HTML report plus a JSON file. An optional AI mode (`--ai`) comes in Phase 5. See [docs/vision.md](docs/vision.md) for the full plan.
 
 ## What it checks
 
@@ -30,7 +30,7 @@ npx playwright install chromium  # one-time browser download
 ## Usage
 
 ```bash
-npx smoke-agent <url> [--headed] [--timeout <seconds>]
+npx smoke-agent <url> [--headed] [--timeout <seconds>] [--out <path>]
 ```
 
 | Argument / option | Description |
@@ -38,6 +38,7 @@ npx smoke-agent <url> [--headed] [--timeout <seconds>]
 | `<url>` | The page to test. `https://` is added if you leave out the scheme (`example.com` works). |
 | `--headed` | Show the browser window instead of running headless. |
 | `-t, --timeout <seconds>` | Maximum run time, 5–60 seconds (default 60). Checks still running when time is up are reported as **not checked**. |
+| `-o, --out <path>` | Where to save the report. A **folder** (e.g. `E:\reports`) gets the default file name `<host>-<timestamp>.html`; a path ending in **`.html`** is used as the exact file name. Default: `reports/`. The JSON is always saved next to the HTML with the same name. Missing folders are created. |
 | `-h, --help` | Show help. |
 
 Example:
@@ -66,12 +67,22 @@ Skipped risky buttons: not clicked, check manually (2)
   - "Delete account"  button#danger  (keyword "delete")
   - "Submit form"  input[type="submit"]  (keyword "submit")
 
-Results saved to reports\localhost-2026-11-04_13-45-32.json
+Report:  reports\localhost-2026-11-04_13-45-32.html
+JSON:    reports\localhost-2026-11-04_13-45-32.json
 
 Result: FAIL (3 failed checks)
 ```
 
-The full details of every check are saved to `reports/<host>-<timestamp>.json`.
+### The HTML report
+
+Each run writes a self-contained HTML report (no internet connection needed to view it) that shows:
+- the overall verdict, start time, duration and page load result
+- summary cards for links, buttons and console errors
+- full tables of every link and button check, failures first, with a status filter (All / Fail / Warning / Skipped / Pass)
+- the risky buttons that weren't clicked, to check manually
+- all console errors, and which click caused them
+
+Everything from the tested page is escaped, and only http(s) URLs are clickable, so a hostile page can't run script inside the report. The JSON file next to it holds the same data for other tools.
 
 During development you can run the TypeScript source directly, without building:
 
@@ -115,8 +126,10 @@ src/
     risky.ts          the risky-button keyword denylist
     deadline.ts       the global time budget
     types.ts          the result types (SmokeResult, LinkCheck, ButtonCheck, …)
+  reporter/
+    htmlReport.ts     renderHtmlReport(result) → self-contained HTML string
   cli/
-    index.ts          commander wrapper: parse args → core → save JSON → exit code
+    index.ts          commander wrapper: parse args → core → save HTML + JSON → exit code
     printSummary.ts   the console summary
 docs/
   vision.md   scope, decisions and roadmap

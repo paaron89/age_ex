@@ -3,7 +3,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Command, CommanderError, InvalidArgumentError } from 'commander';
 import { MAX_TIMEOUT_MS, runSmokeCheck, type SmokeResult } from '../core/index.js';
-import { printSummary } from './printSummary.js';
+import { renderHtmlReport } from '../reporter/index.js';
+import { printSummary, type SavedFiles } from './printSummary.js';
 
 /** Exit codes (see docs/vision.md §5). */
 const EXIT_OK = 0;
@@ -25,10 +26,14 @@ const program = new Command()
     parseTimeout,
     MAX_TIMEOUT_MS / 1000,
   )
+  .option(
+    '-o, --out <path>',
+    `folder for the report, or a file ending in .html (default: ${REPORTS_DIR}/); the JSON is saved next to it`,
+  )
   .showHelpAfterError()
   // Throw instead of exiting, so usage errors get our exit code 2 rather than commander's 1.
   .exitOverride()
-  .action(async (url: string, opts: { headed: boolean; timeout: number }) => {
+  .action(async (url: string, opts: { headed: boolean; timeout: number; out?: string }) => {
     let result: SmokeResult;
     try {
       result = await runSmokeCheck(url, { headed: opts.headed, timeoutMs: opts.timeout * 1000 });
@@ -38,16 +43,16 @@ const program = new Command()
       return;
     }
 
-    let resultsPath: string | null = null;
+    let saved: SavedFiles | null = null;
     try {
-      resultsPath = await writeResults(result);
+      saved = await writeOutputs(result, opts.out);
     } catch (err) {
-      console.error(`\nCould not save results: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`\nCould not save the report: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    printSummary(result, resultsPath);
+    printSummary(result, saved);
 
-    if (!result.page.ok || resultsPath === null) process.exitCode = EXIT_TOOL_ERROR;
+    if (!result.page.ok || saved === null) process.exitCode = EXIT_TOOL_ERROR;
     else if (result.summary.total.fail > 0) process.exitCode = EXIT_CHECKS_FAILED;
     else process.exitCode = EXIT_OK;
   });
@@ -83,13 +88,22 @@ function parseTimeout(value: string): number {
   return seconds;
 }
 
-/** Saves the result as reports/<host>-<timestamp>.json and returns the path. */
-async function writeResults(result: SmokeResult): Promise<string> {
+/**
+ * Saves the HTML report and the results JSON side by side.
+ * Default: reports/<host>-<timestamp>.html/.json. With --out: a path ending in .html is used as the
+ * report file (JSON gets the same name); any other path is a folder that gets the default file names.
+ */
+async function writeOutputs(result: SmokeResult, out?: string): Promise<SavedFiles> {
   const host = new URL(result.url).hostname.replace(/[^a-z0-9.-]/gi, '_');
-  const file = path.join(REPORTS_DIR, `${host}-${localTimestamp(new Date(result.startedAt))}.json`);
-  await mkdir(REPORTS_DIR, { recursive: true });
-  await writeFile(file, JSON.stringify(result, null, 2) + '\n', 'utf8');
-  return file;
+  const defaultName = `${host}-${localTimestamp(new Date(result.startedAt))}.html`;
+  // --out ending in .html/.htm is the report file; anything else is a folder for the default file names.
+  const html = out && /\.html?$/i.test(out) ? out : path.join(out ?? REPORTS_DIR, defaultName);
+  const json = html.replace(/\.html?$/i, '.json');
+
+  await mkdir(path.dirname(path.resolve(html)), { recursive: true });
+  await writeFile(json, JSON.stringify(result, null, 2) + '\n', 'utf8');
+  await writeFile(html, renderHtmlReport(result), 'utf8');
+  return { html, json };
 }
 
 /** e.g. 2026-11-04_14-05-22 (local time, safe for file names). */
