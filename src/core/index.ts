@@ -1,2 +1,15 @@
 export { runSmokeCheck, MAX_TIMEOUT_MS } from './runSmokeCheck.js';
-export type { SmokeOptions, SmokeResult, PageLoadResult, ConsoleIssue } from './types.js';
+export { DEFAULT_RISKY_KEYWORDS } from './risky.js';
+export type {
+  SmokeOptions,
+  SmokeResult,
+  PageLoadResult,
+  ConsoleIssue,
+  CheckStatus,
+  LinkCheck,
+  LinkKind,
+  ButtonCheck,
+  ButtonSkipReason,
+  ButtonReaction,
+  StatusCounts,
+} from './types.js';
