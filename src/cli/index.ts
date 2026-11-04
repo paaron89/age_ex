@@ -1,29 +1,55 @@
 #!/usr/bin/env node
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { Command, CommanderError, InvalidArgumentError } from 'commander';
-import { runSmokeCheck, type SmokeResult } from '../core/index.js';
+import { MAX_TIMEOUT_MS, runSmokeCheck, type SmokeResult } from '../core/index.js';
+import { printSummary } from './printSummary.js';
 
 /** Exit codes (see docs/vision.md §5). */
 const EXIT_OK = 0;
-// const EXIT_CHECKS_FAILED = 1; // used from Phase 3, when link/button checks exist
+const EXIT_CHECKS_FAILED = 1;
 const EXIT_TOOL_ERROR = 2;
+
+const REPORTS_DIR = 'reports';
+/** Below this there's no time left for checks after loading the page and the cleanup reserve. */
+const MIN_TIMEOUT_S = 5;
 
 const program = new Command()
   .name('smoke-agent')
   .description('Smoke tests a web page: checks that its links and buttons work.')
   .argument('<url>', 'page to test (https:// is added if no scheme is given)', parseUrl)
   .option('--headed', 'show the browser window instead of running headless', false)
+  .option(
+    '-t, --timeout <seconds>',
+    `max run time in seconds (${MIN_TIMEOUT_S}–${MAX_TIMEOUT_MS / 1000})`,
+    parseTimeout,
+    MAX_TIMEOUT_MS / 1000,
+  )
   .showHelpAfterError()
   // Throw instead of exiting, so usage errors get our exit code 2 rather than commander's 1.
   .exitOverride()
-  .action(async (url: string, opts: { headed: boolean }) => {
+  .action(async (url: string, opts: { headed: boolean; timeout: number }) => {
+    let result: SmokeResult;
     try {
-      const result = await runSmokeCheck(url, { headed: opts.headed });
-      printSummary(result);
-      process.exitCode = result.page.ok ? EXIT_OK : EXIT_TOOL_ERROR;
+      result = await runSmokeCheck(url, { headed: opts.headed, timeoutMs: opts.timeout * 1000 });
     } catch (err) {
       console.error(`\nsmoke-agent crashed: ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = EXIT_TOOL_ERROR;
+      return;
     }
+
+    let resultsPath: string | null = null;
+    try {
+      resultsPath = await writeResults(result);
+    } catch (err) {
+      console.error(`\nCould not save results: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    printSummary(result, resultsPath);
+
+    if (!result.page.ok || resultsPath === null) process.exitCode = EXIT_TOOL_ERROR;
+    else if (result.summary.total.fail > 0) process.exitCode = EXIT_CHECKS_FAILED;
+    else process.exitCode = EXIT_OK;
   });
 
 try {
@@ -48,25 +74,26 @@ function parseUrl(value: string): string {
   return parsed.href;
 }
 
-function printSummary(r: SmokeResult): void {
-  const { page } = r;
-  const lines = [`\nSmoke check: ${r.url}`];
-
-  if (page.ok) {
-    lines.push(`  Page        ${page.status} OK  (${page.loadTimeMs} ms)  "${page.title ?? ''}"`);
-  } else if (page.status !== null) {
-    lines.push(`  Page        ${page.status} FAILED  (${page.loadTimeMs} ms)`);
-  } else {
-    lines.push(`  Page        FAILED to load: ${page.error ?? 'unknown error'}`);
+function parseTimeout(value: string): number {
+  const seconds = Number(value);
+  const max = MAX_TIMEOUT_MS / 1000;
+  if (!Number.isFinite(seconds) || seconds < MIN_TIMEOUT_S || seconds > max) {
+    throw new InvalidArgumentError(`Must be a number of seconds between ${MIN_TIMEOUT_S} and ${max}.`);
   }
-  if (page.finalUrl && page.finalUrl !== r.url) lines.push(`  Redirected  ${page.finalUrl}`);
+  return seconds;
+}
 
-  lines.push(`  Console     ${r.consoleIssues.length} error(s)`);
-  for (const issue of r.consoleIssues.slice(0, 5)) lines.push(`                - [${issue.type}] ${issue.message}`);
-  if (r.consoleIssues.length > 5) lines.push(`                … and ${r.consoleIssues.length - 5} more`);
+/** Saves the result as reports/<host>-<timestamp>.json and returns the path. */
+async function writeResults(result: SmokeResult): Promise<string> {
+  const host = new URL(result.url).hostname.replace(/[^a-z0-9.-]/gi, '_');
+  const file = path.join(REPORTS_DIR, `${host}-${localTimestamp(new Date(result.startedAt))}.json`);
+  await mkdir(REPORTS_DIR, { recursive: true });
+  await writeFile(file, JSON.stringify(result, null, 2) + '\n', 'utf8');
+  return file;
+}
 
-  lines.push(`  Duration    ${(r.durationMs / 1000).toFixed(1)} s${r.timedOut ? '  (time budget exceeded)' : ''}`);
-  lines.push(`\nResult: ${page.ok ? 'PASS (page loaded)' : 'ERROR (page did not load)'}\n`);
-
-  console.log(lines.join('\n'));
+/** e.g. 2026-11-04_14-05-22 (local time, safe for file names). */
+function localTimestamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
 }
