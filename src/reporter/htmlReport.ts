@@ -1,4 +1,4 @@
-import type { ButtonCheck, CheckStatus, ConsoleIssue, LinkCheck, SmokeResult, StatusCounts } from '../core/index.js';
+import type { AiNote, ButtonCheck, CheckStatus, ConsoleIssue, LinkCheck, SmokeResult, StatusCounts } from '../core/index.js';
 
 /**
  * Renders a smoke result as a self-contained HTML page (inline CSS and JS, no external requests).
@@ -32,6 +32,7 @@ export function renderHtmlReport(r: SmokeResult): string {
     </dl>
   </header>
 
+  ${r.ai ? aiSection(r) : ''}
   ${pageSection(r)}
   ${r.page.ok ? summaryCards(r) : ''}
   ${r.page.ok ? filterBar(r.summary.total) : ''}
@@ -121,7 +122,7 @@ function linksSection(links: LinkCheck[]): string {
         <td class="num">${l.occurrences}</td>
         <td class="num">${http}</td>
         <td class="num">${l.durationMs !== undefined ? esc(formatMs(l.durationMs)) : ''}</td>
-        <td class="wrap">${esc(l.message ?? '')}</td>
+        <td class="wrap">${esc(l.message ?? '')}${aiNote(l.ai)}</td>
       </tr>`;
     })
     .join('');
@@ -146,7 +147,7 @@ function buttonsSection(buttons: ButtonCheck[]): string {
         <td><code>${esc(b.selector)}</code></td>
         <td>${reactions}${nav}</td>
         <td class="num">${b.durationMs !== undefined ? esc(formatMs(b.durationMs)) : ''}</td>
-        <td class="wrap">${esc(b.message ?? '')}</td>
+        <td class="wrap">${esc(b.message ?? '')}${b.skipReason === 'ai-risky' ? '' : aiNote(b.ai)}</td>
       </tr>`;
     })
     .join('');
@@ -160,10 +161,16 @@ function buttonsSection(buttons: ButtonCheck[]): string {
 }
 
 function riskySection(buttons: ButtonCheck[]): string {
-  const risky = buttons.filter((b) => b.skipReason === 'risky');
+  const risky = buttons.filter((b) => b.skipReason === 'risky' || b.skipReason === 'ai-risky');
   if (risky.length === 0) return '';
   const items = risky
-    .map((b) => `<li><strong>${esc(b.label)}</strong> <code>${esc(b.selector)}</code> <span class="muted">keyword “${esc(b.matchedKeyword ?? '')}”</span></li>`)
+    .map((b) => {
+      const why =
+        b.skipReason === 'risky'
+          ? `<span class="muted">keyword “${esc(b.matchedKeyword ?? '')}”</span>${aiNote(b.ai)}`
+          : `<span class="tag ai">AI review</span> <span class="muted">${esc(b.ai?.reason ?? '')}</span>`;
+      return `<li><strong>${esc(b.label)}</strong> <code>${esc(b.selector)}</code> ${why}</li>`;
+    })
     .join('');
   return `<section class="callout">
     <h2>Check manually: risky buttons not clicked <span class="muted">(${risky.length})</span></h2>
@@ -188,6 +195,43 @@ function consoleSection(issues: ConsoleIssue[]): string {
       <tbody>${rows}</tbody>
     </table></div>
   </section>`;
+}
+
+function aiSection(r: SmokeResult): string {
+  const ai = r.ai!;
+  const parts: string[] = [];
+  if (ai.summary) parts.push(ai.summary.split(/\n+/).map((p) => `<p>${esc(p)}</p>`).join(''));
+  if (ai.recommendations?.length) {
+    parts.push(`<h3>Next steps</h3><ul>${ai.recommendations.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`);
+  }
+  const status: string[] = [];
+  if (ai.buttonReview) {
+    const br = ai.buttonReview;
+    status.push(
+      br.ok
+        ? `Reviewed ${br.reviewed} button(s) before clicking; ${br.addedSkips} extra skipped as risky (${esc(formatMs(br.durationMs))}).`
+        : `Button review failed: ${esc(br.error ?? 'unknown error')}`,
+    );
+  }
+  if (ai.triage) {
+    status.push(
+      ai.triage.ok
+        ? `Triage and summary took ${esc(formatMs(ai.triage.durationMs))}.`
+        : `Triage and summary failed: ${esc(ai.triage.error ?? 'unknown error')}`,
+    );
+  }
+  return `<section class="ai-panel">
+    <h2>AI review <span class="muted">${ai.model ? `(${esc(ai.model)})` : ''}</span></h2>
+    ${parts.join('') || '<p class="muted">No AI summary available.</p>'}
+    <p class="ai-meta">${status.join(' ')} AI output is advisory and may be wrong; it never changes a check's status or the exit code.</p>
+  </section>`;
+}
+
+/** An inline AI opinion under a check's details. */
+function aiNote(note?: AiNote): string {
+  if (!note) return '';
+  const cls = note.verdict === 'likely-bug' || note.verdict === 'risky' ? 'fail' : note.verdict === 'unsure' ? 'not-checked' : 'pass';
+  return `<div class="ai-note"><span class="tag ai">AI</span><span class="badge ${cls}">${esc(note.verdict)}</span> ${esc(note.reason)}</div>`;
 }
 
 // ---------- helpers ----------
@@ -319,6 +363,14 @@ table.kv tr:first-child th, table.kv tr:first-child td { border-top: 0; }
 .callout ul { margin: 0; padding-left: 20px; }
 .callout li { margin-bottom: 4px; }
 tr.hidden { display: none; }
+.ai-panel { border-left: 4px solid var(--not-checked); }
+.ai-panel p { margin: 0 0 8px; }
+.ai-panel h3 { margin: 12px 0 4px; font-size: 14px; }
+.ai-panel ul { margin: 0 0 8px; padding-left: 20px; }
+.ai-meta { color: var(--muted); font-size: 12px; margin-top: 12px !important; }
+.ai-note { margin-top: 4px; font-size: 12px; }
+.ai-note .badge { margin-right: 4px; }
+.tag.ai { color: var(--not-checked); border-color: var(--not-checked); font-weight: 600; }
 footer { color: var(--muted); font-size: 12px; text-align: center; }
 `;
 

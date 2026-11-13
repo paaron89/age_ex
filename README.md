@@ -2,7 +2,7 @@
 
 A command-line tool that smoke-tests a single web page with Playwright. It checks that the page loads and that its links and buttons work, then writes a simple HTML report. The whole run is capped at **1 minute**.
 
-> **Status: Phase 4 (HTML report).** The tool checks the page's links and buttons and writes an HTML report plus a JSON file. An optional AI mode (`--ai`) comes in Phase 5. See [docs/vision.md](docs/vision.md) for the full plan.
+> **Status: Phase 5 (AI mode).** The tool checks the page's links and buttons and writes an HTML report plus a JSON file. With `--ai`, Claude also reviews risky buttons, triages warnings and writes a summary. See [docs/vision.md](docs/vision.md) for the full plan.
 
 ## What it checks
 
@@ -30,7 +30,7 @@ npx playwright install chromium  # one-time browser download
 ## Usage
 
 ```bash
-npx smoke-agent <url> [--headed] [--timeout <seconds>] [--out <path>]
+npx smoke-agent <url> [--headed] [--timeout <seconds>] [--out <path>] [--ai]
 ```
 
 | Argument / option | Description |
@@ -39,6 +39,7 @@ npx smoke-agent <url> [--headed] [--timeout <seconds>] [--out <path>]
 | `--headed` | Show the browser window instead of running headless. |
 | `-t, --timeout <seconds>` | Maximum run time, 5–60 seconds (default 60). Checks still running when time is up are reported as **not checked**. |
 | `-o, --out <path>` | Where to save the report. A **folder** (e.g. `E:\reports`) gets the default file name `<host>-<timestamp>.html`; a path ending in **`.html`** is used as the exact file name. Default: `reports/`. The JSON is always saved next to the HTML with the same name. Missing folders are created. |
+| `--ai` | Add an AI review with Claude (see [AI mode](#ai-mode---ai) below). Needs an API key and `--timeout` of at least 20. |
 | `-h, --help` | Show help. |
 
 Example:
@@ -84,6 +85,27 @@ Each run writes a self-contained HTML report (no internet connection needed to v
 
 Everything from the tested page is escaped, and only http(s) URLs are clickable, so a hostile page can't run script inside the report. The JSON file next to it holds the same data for other tools.
 
+## AI mode (`--ai`)
+
+```powershell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."   # get a key at https://console.anthropic.com
+npm run smoke -- example.com --ai
+```
+
+With `--ai`, Claude (`claude-opus-5-5`) adds three things on top of the normal checks:
+
+1. **Risky-button review before clicking.** One call looks at every button with its page context (form, nearest heading, nav/header/dialog) and can mark extra buttons as risky, e.g. "Continue" inside a checkout form. Those are **not clicked** and are listed under "check manually". The AI can only **add** skips: buttons skipped by the keyword list are never unblocked; for those it only adds an opinion.
+2. **Warning triage.** After the run, each warning gets a verdict (**likely bug** / **likely fine** / **unsure**) with a short reason, e.g. an external site blocking bots vs. a dead button.
+3. **Summary and next steps** in plain language at the top of the report and in the console output.
+
+**What to know:**
+- **Advisory only.** AI output never changes a check's status or the exit code, so CI results stay deterministic. It can be wrong.
+- **Time.** The whole run still fits in `--timeout` (at least 20 s with `--ai`): 20 s are kept free for the triage call, and the button review may take up to 20 s while link checks keep running. If an AI call fails or runs out of time, the report is still written without it.
+- **Data sent to Anthropic.** The page URL and title, button labels and their context, link URLs and texts, check results and console error messages are sent to the Claude API. Don't use `--ai` on pages whose content must not leave your network.
+- **Cost.** Two requests per run; typically a few cents, more on very large pages.
+- **Credentials.** The SDK reads `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`, or an `ant auth login` profile). Without credentials, `--ai` stops right away with exit code `2`.
+- **Prompt injection.** Page text is passed to Claude as untrusted data and the prompts tell it to ignore instructions inside it. A hostile page could still try to influence the review; because the AI can only add skips and never changes statuses, the worst case is less coverage or a misleading summary.
+
 During development you can run the TypeScript source directly, without building:
 
 ```bash
@@ -126,6 +148,10 @@ src/
     risky.ts          the risky-button keyword denylist
     deadline.ts       the global time budget
     types.ts          the result types (SmokeResult, LinkCheck, ButtonCheck, …)
+  ai/
+    claude.ts         Claude client, credentials check, structured-output request helper
+    buttonReview.ts   pre-click risky-button review (plugs into core via SmokeOptions.buttonRiskReviewer)
+    triage.ts         post-run warning triage + summary
   reporter/
     htmlReport.ts     renderHtmlReport(result) → self-contained HTML string
   cli/

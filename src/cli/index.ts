@@ -2,6 +2,14 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Command, CommanderError, InvalidArgumentError } from 'commander';
+import type Anthropic from '@anthropic-ai/sdk';
+import {
+  AI_MODEL,
+  createClaudeButtonReviewer,
+  createClaudeClient,
+  hasClaudeCredentials,
+  triageWithClaude,
+} from '../ai/index.js';
 import { MAX_TIMEOUT_MS, runSmokeCheck, type SmokeResult } from '../core/index.js';
 import { renderHtmlReport } from '../reporter/index.js';
 import { printSummary, type SavedFiles } from './printSummary.js';
@@ -14,6 +22,9 @@ const EXIT_TOOL_ERROR = 2;
 const REPORTS_DIR = 'reports';
 /** Below this there's no time left for checks after loading the page and the cleanup reserve. */
 const MIN_TIMEOUT_S = 5;
+/** With --ai: the minimum total budget, and the part of it kept free for the post-run AI triage. */
+const MIN_AI_TIMEOUT_S = 20;
+const AI_TRIAGE_RESERVE_MS = 20_000;
 
 const program = new Command()
   .name('smoke-agent')
@@ -30,17 +41,62 @@ const program = new Command()
     '-o, --out <path>',
     `folder for the report, or a file ending in .html (default: ${REPORTS_DIR}/); the JSON is saved next to it`,
   )
+  .option(
+    '--ai',
+    `add an AI review with Claude (${AI_MODEL}): flags risky buttons by context before clicking, ` +
+      'triages warnings and writes a summary. Needs ANTHROPIC_API_KEY. Advisory only: never changes the exit code',
+    false,
+  )
   .showHelpAfterError()
   // Throw instead of exiting, so usage errors get our exit code 2 rather than commander's 1.
   .exitOverride()
-  .action(async (url: string, opts: { headed: boolean; timeout: number; out?: string }) => {
+  .action(async (url: string, opts: { headed: boolean; timeout: number; out?: string; ai: boolean }) => {
+    const startedAt = Date.now();
+    const totalMs = opts.timeout * 1000;
+
+    let client: Anthropic | undefined;
+    if (opts.ai) {
+      if (opts.timeout < MIN_AI_TIMEOUT_S) {
+        console.error(`error: --ai needs --timeout of at least ${MIN_AI_TIMEOUT_S} seconds (got ${opts.timeout}).`);
+        process.exitCode = EXIT_TOOL_ERROR;
+        return;
+      }
+      if (!hasClaudeCredentials()) {
+        console.error(
+          'error: --ai needs Claude API credentials. Set ANTHROPIC_API_KEY (get a key at https://console.anthropic.com),\n' +
+            '       e.g. in PowerShell:  $env:ANTHROPIC_API_KEY = "sk-ant-..."',
+        );
+        process.exitCode = EXIT_TOOL_ERROR;
+        return;
+      }
+      client = createClaudeClient();
+    }
+
     let result: SmokeResult;
     try {
-      result = await runSmokeCheck(url, { headed: opts.headed, timeoutMs: opts.timeout * 1000 });
+      result = await runSmokeCheck(url, {
+        headed: opts.headed,
+        // With --ai, keep time free for the triage call at the end.
+        timeoutMs: client ? totalMs - AI_TRIAGE_RESERVE_MS : totalMs,
+        ...(client ? { buttonRiskReviewer: createClaudeButtonReviewer(client) } : {}),
+      });
     } catch (err) {
       console.error(`\nsmoke-agent crashed: ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = EXIT_TOOL_ERROR;
       return;
+    }
+
+    if (client && result.page.ok) {
+      // The triage gets whatever is left of the total budget (usually much more than the reserve).
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), Math.max(0, totalMs - (Date.now() - startedAt) - 1_000));
+      try {
+        await triageWithClaude(client, result, controller.signal);
+      } finally {
+        clearTimeout(timer);
+      }
+      result.ai = { ...result.ai, model: AI_MODEL };
+      result.durationMs = Date.now() - startedAt; // include the AI time
     }
 
     let saved: SavedFiles | null = null;
