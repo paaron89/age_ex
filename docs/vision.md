@@ -31,7 +31,7 @@ Each phase gets its own feature branch and is merged before the next one starts.
 | 2 | ✅ **Project setup** | `project-setup` | TS/Node project, Playwright installed, CLI skeleton that accepts a URL and opens the page | `npx smoke-agent <url>` opens the page and prints its status |
 | 3 | ✅ **Core check logic** | `core-checks` | Discover links and buttons, check them (including the risky-button denylist), collect results as structured JSON, enforce the 60s deadline | The run produces a results JSON within 60s on a sample page, and exit code 1 on failed checks |
 | 4 | ✅ **HTML reporter** | `html-report` | Generate `report.html` from the results JSON; add `--out` | The report shows all checks, timings and the summary |
-| 5 | **AI layer (`--ai`)** | tbd | Optional Claude-powered step on top of the deterministic results (see §4, "AI roadmap") | With `--ai`, warnings are triaged, risky buttons are classified by context, and the report has an AI summary; without `--ai`, nothing changes |
+| 5 | 🚧 **AI layer (`--ai`)** (built; first live run with an API key pending) | `ai-layer` | Optional Claude-powered step on top of the deterministic results (see §4, "AI roadmap") | With `--ai`, warnings are triaged, risky buttons are classified by context, and the report has an AI summary; without `--ai`, nothing changes |
 | 6 | **Hardening** | tbd | Self-tests against a local fixture page, edge cases (iframes, SPAs, slow pages), README polish | Runs reliably on 3–5 real pages |
 
 Later phases come from the backlog in §6.
@@ -140,3 +140,9 @@ That way a future UI, or a team's Playwright suite (`smokeCheck(page)`), can cal
 | 2026-11-04 | `-t, --timeout <seconds>` CLI option (5–60, default 60) | Lets the tester shorten the run; 60 s stays the maximum |
 | 2026-11-04 | Each run writes the HTML report and the JSON side by side; `--out` takes a folder, or a file path ending in `.html` | One file for people, one for tools (CI, a future UI or the AI layer) |
 | 2026-11-04 | The report is a single self-contained file that escapes all page content, with a strict CSP | Easy to share or attach to a ticket, and a tested page can't inject script into it |
+| 2026-11-05 | AI mode: `claude-opus-5-5` via `@anthropic-ai/sdk`, low effort, structured JSON output, `fallbacks: "default"` | Default current model; low effort keeps calls fast; structured output gives parseable answers; fallback avoids hard refusals |
+| 2026-11-05 | Two batched AI calls per run: a pre-click button review and a post-run triage + summary | Few calls keep the run inside the 1-minute budget and the cost low |
+| 2026-11-05 | The AI can only ADD button skips, never unblock keyword skips | Safety on real sites; an AI mistake can only reduce coverage |
+| 2026-11-05 | AI output is advisory: it never changes statuses or the exit code | CI stays deterministic; AI can be wrong |
+| 2026-11-05 | `--ai` needs `--timeout` ≥ 20 s; 20 s reserved for triage; button review capped at 20 s; AI failures don't fail the run | Whole run stays within the time limit; the report is always written |
+| 2026-11-05 | The core gets an SDK-free `buttonRiskReviewer` hook; all Claude code lives in `src/ai/` | Keeps the core reusable without the AI dependency |

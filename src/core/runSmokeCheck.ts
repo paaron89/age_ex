@@ -1,14 +1,27 @@
 import { chromium, errors, request as playwrightRequest, type Page } from 'playwright';
-import { checkButtons, discoverButtons } from './buttons.js';
+import { applyRiskVerdicts, checkButtons, discoverButtons } from './buttons.js';
 import { Deadline } from './deadline.js';
 import { checkHttpLinks, checkLocalLinks, discoverLinks } from './links.js';
 import { PageObserver } from './observer.js';
 import { DEFAULT_RISKY_KEYWORDS } from './risky.js';
-import type { ButtonCheck, CheckStatus, LinkCheck, PageLoadResult, SmokeOptions, SmokeResult, StatusCounts } from './types.js';
+import type {
+  AiAnalysis,
+  ButtonCheck,
+  ButtonRiskCandidate,
+  ButtonRiskReviewer,
+  CheckStatus,
+  LinkCheck,
+  PageLoadResult,
+  SmokeOptions,
+  SmokeResult,
+  StatusCounts,
+} from './types.js';
 
 export const MAX_TIMEOUT_MS = 60_000;
 /** Time kept free at the end of the budget for closing the browser and writing results. */
 const CLEANUP_RESERVE_MS = 3_000;
+/** Max time the optional button reviewer may take; button clicks wait for it. */
+const REVIEW_TIMEOUT_MS = 20_000;
 
 /**
  * Opens `url` in Chromium and smoke-checks it: loads the page, checks every link
@@ -26,6 +39,7 @@ export async function runSmokeCheck(url: string, options: SmokeOptions = {}): Pr
 
   let links: LinkCheck[] = [];
   let buttons: ButtonCheck[] = [];
+  let buttonReview: AiAnalysis['buttonReview'];
 
   const browser = await chromium.launch({ headless: !options.headed });
   try {
@@ -37,7 +51,8 @@ export async function runSmokeCheck(url: string, options: SmokeOptions = {}): Pr
 
     if (pageResult.ok && !deadline.expired()) {
       links = await discoverLinks(page);
-      buttons = await discoverButtons(page, riskyKeywords);
+      const discovered = await discoverButtons(page, riskyKeywords);
+      buttons = discovered.buttons;
       await checkLocalLinks(page, links);
 
       // Link requests use their own request context: they don't share cookies with the
@@ -46,10 +61,19 @@ export async function runSmokeCheck(url: string, options: SmokeOptions = {}): Pr
       const userAgent = await page.evaluate(() => navigator.userAgent);
       const linkRequests = await playwrightRequest.newContext({ userAgent });
       try {
-        await Promise.all([
-          checkHttpLinks(links, linkRequests, deadline),
-          checkButtons(page, buttons, observer, deadline),
-        ]);
+        // Buttons wait for the optional reviewer (it may add skips); links don't need to.
+        const buttonsTask = async () => {
+          if (options.buttonRiskReviewer && discovered.candidates.length > 0) {
+            buttonReview = await reviewButtons(
+              options.buttonRiskReviewer,
+              { url: page.url(), title: pageResult.title ?? '', buttons: discovered.candidates },
+              buttons,
+              deadline,
+            );
+          }
+          await checkButtons(page, buttons, observer, deadline);
+        };
+        await Promise.all([checkHttpLinks(links, linkRequests, deadline), buttonsTask()]);
       } finally {
         await linkRequests.dispose();
       }
@@ -71,6 +95,7 @@ export async function runSmokeCheck(url: string, options: SmokeOptions = {}): Pr
         buttons: countStatuses(buttons),
         total: countStatuses([...links, ...buttons]),
       },
+      ...(buttonReview ? { ai: { buttonReview } } : {}),
     };
   } finally {
     await browser.close();
@@ -110,6 +135,33 @@ async function loadPage(
       },
     };
   }
+}
+
+/** Runs the reviewer with a time limit and applies its verdicts. Never throws. */
+async function reviewButtons(
+  reviewer: ButtonRiskReviewer,
+  input: { url: string; title: string; buttons: ButtonRiskCandidate[] },
+  buttons: ButtonCheck[],
+  deadline: Deadline,
+): Promise<NonNullable<AiAnalysis['buttonReview']>> {
+  const t0 = Date.now();
+  const controller = new AbortController();
+  // Leave at least a few seconds for clicking after the review.
+  const timer = setTimeout(() => controller.abort(), Math.max(0, Math.min(REVIEW_TIMEOUT_MS, deadline.remaining() - 5_000)));
+  try {
+    const verdicts = await reviewer(input, controller.signal);
+    const addedSkips = applyRiskVerdicts(buttons, input.buttons, verdicts);
+    return { ok: true, durationMs: Date.now() - t0, reviewed: input.buttons.length, addedSkips };
+  } catch (err) {
+    const error = controller.signal.aborted ? 'Timed out; continued with the keyword list only.' : errorMessage(err);
+    return { ok: false, durationMs: Date.now() - t0, reviewed: 0, addedSkips: 0, error };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? firstLine(err.message) : String(err);
 }
 
 function countStatuses(checks: { status: CheckStatus }[]): StatusCounts {

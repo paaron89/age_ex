@@ -12,4 +12,9 @@ export type {
   ButtonSkipReason,
   ButtonReaction,
   StatusCounts,
+  AiAnalysis,
+  AiNote,
+  ButtonRiskCandidate,
+  ButtonRiskVerdict,
+  ButtonRiskReviewer,
 } from './types.js';

@@ -37,13 +37,18 @@ export function printSummary(r: SmokeResult, saved: SavedFiles | null): void {
   section(out, 'Warnings', items.filter((i) => i.status === 'warning'));
 
   // Every risky button is listed (no limit): the tester should check these by hand.
-  const risky = r.buttons.filter((b) => b.skipReason === 'risky');
+  const risky = r.buttons.filter((b) => b.skipReason === 'risky' || b.skipReason === 'ai-risky');
   if (risky.length > 0) {
     out.push(`\nSkipped risky buttons: not clicked, check manually (${risky.length})`);
-    for (const b of risky) out.push(`  - "${b.label}"  ${b.selector}  (keyword "${b.matchedKeyword}")`);
+    for (const b of risky) {
+      const why = b.skipReason === 'risky' ? `keyword "${b.matchedKeyword}"` : 'AI review';
+      const opinion = b.ai ? `  [AI: ${b.ai.verdict}] ${b.ai.reason}` : '';
+      out.push(`  - "${b.label}"  ${b.selector}  (${why})${b.skipReason === 'risky' ? opinion : `  ${b.ai?.reason ?? ''}`}`);
+    }
   }
 
   section(out, 'Not checked: time budget ran out', items.filter((i) => i.status === 'not-checked'));
+  if (r.ai) aiSection(out, r);
 
   if (saved) out.push(`\nReport:  ${saved.html}\nJSON:    ${saved.json}`);
   out.push(`\nResult: ${verdict(r)}\n`);
@@ -56,12 +61,48 @@ interface Item {
 }
 
 function asItem(c: LinkCheck | ButtonCheck): Item {
+  // AI triage notes are shown on warnings only (skips have their own section).
+  const ai = c.ai && c.status === 'warning' ? `\n      [AI: ${c.ai.verdict}] ${c.ai.reason}` : '';
   if ('kind' in c) {
     const text = c.texts.length ? `  ("${c.texts[0]}"${c.occurrences > 1 ? `, ${c.occurrences}x` : ''})` : '';
     const where = c.external ? ' [external]' : '';
-    return { status: c.status, line: `link    ${c.url}${where}${text}${c.message ? `  ${c.message}` : ''}` };
+    return { status: c.status, line: `link    ${c.url}${where}${text}${c.message ? `  ${c.message}` : ''}${ai}` };
   }
-  return { status: c.status, line: `button  "${c.label}"  ${c.selector}${c.message ? `  ${c.message}` : ''}` };
+  return { status: c.status, line: `button  "${c.label}"  ${c.selector}${c.message ? `  ${c.message}` : ''}${ai}` };
+}
+
+function aiSection(out: string[], r: SmokeResult): void {
+  const ai = r.ai!;
+  out.push(`\nAI review${ai.model ? ` (${ai.model})` : ''}: advisory, may be wrong`);
+  if (ai.buttonReview) {
+    const br = ai.buttonReview;
+    out.push(
+      br.ok
+        ? `  Buttons reviewed before clicking: ${br.reviewed}, extra skipped as risky: ${br.addedSkips}  (${(br.durationMs / 1000).toFixed(1)} s)`
+        : `  Button review failed: ${br.error}`,
+    );
+  }
+  if (ai.triage && !ai.triage.ok) out.push(`  Triage and summary failed: ${ai.triage.error}`);
+  if (ai.summary) out.push('', ...wrap(ai.summary, 96).map((l) => `  ${l}`));
+  if (ai.recommendations?.length) {
+    out.push('', '  Next steps:');
+    for (const rec of ai.recommendations) out.push(`  - ${rec}`);
+  }
+}
+
+function wrap(text: string, width: number): string[] {
+  const lines: string[] = [];
+  for (const para of text.split(/\n+/)) {
+    let line = '';
+    for (const word of para.split(/\s+/).filter(Boolean)) {
+      if (line && line.length + word.length + 1 > width) {
+        lines.push(line);
+        line = word;
+      } else line = line ? `${line} ${word}` : word;
+    }
+    if (line) lines.push(line);
+  }
+  return lines;
 }
 
 function section(out: string[], title: string, items: Item[]): void {

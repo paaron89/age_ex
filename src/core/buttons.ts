@@ -2,7 +2,7 @@ import type { Page } from 'playwright';
 import type { Deadline } from './deadline.js';
 import type { PageObserver } from './observer.js';
 import { matchRiskyKeyword } from './risky.js';
-import type { ButtonCheck, ButtonReaction } from './types.js';
+import type { ButtonCheck, ButtonReaction, ButtonRiskCandidate, ButtonRiskVerdict } from './types.js';
 
 /** Elements treated as buttons. `<a href role="button">` is excluded: it's checked as a link. */
 export const BUTTON_SELECTOR =
@@ -24,6 +24,8 @@ interface ButtonSnapshot {
   selector: string;
   visible: boolean;
   disabled: boolean;
+  /** Where the button sits on the page (form, nearest heading, landmark), for reviewers. */
+  context: string;
 }
 
 /**
@@ -58,7 +60,23 @@ async function snapshotButtons(page: Page): Promise<ButtonSnapshot[]> {
       const visible =
         rect.width > 0 && rect.height > 0 && h.checkVisibility({ visibilityProperty: true, opacityProperty: true });
       const disabled = !!h.disabled || h.getAttribute('aria-disabled') === 'true';
-      return { label: label.slice(0, 80), selector, visible, disabled };
+
+      // Context for reviewers: type, enclosing form, landmark area and the nearest heading above.
+      const parts: string[] = [];
+      const type = h.getAttribute('type');
+      if (type) parts.push(`type="${type}"`);
+      const form = h.closest('form');
+      if (form) parts.push(`in form action="${form.getAttribute('action') ?? ''}" method="${form.getAttribute('method') ?? 'get'}"`);
+      const area = h.closest('nav, header, footer, aside, dialog, [role="dialog"]');
+      if (area) parts.push(`inside <${area.tagName.toLowerCase()}>`);
+      let heading = '';
+      for (const hd of document.querySelectorAll('h1, h2, h3, h4')) {
+        if (hd.compareDocumentPosition(h) & Node.DOCUMENT_POSITION_FOLLOWING) heading = (hd.textContent ?? '').trim();
+        else break;
+      }
+      if (heading) parts.push(`under heading "${heading.replace(/\s+/g, ' ').slice(0, 60)}"`);
+
+      return { label: label.slice(0, 80), selector, visible, disabled, context: parts.join('; ') };
     }),
   );
 }
@@ -67,9 +85,12 @@ async function snapshotButtons(page: Page): Promise<ButtonSnapshot[]> {
  * Finds all button-like elements and decides which ones to click.
  * Risky, hidden and disabled buttons are marked `skipped`; the rest are `not-checked` until clicked.
  */
-export async function discoverButtons(page: Page, riskyKeywords: readonly string[]): Promise<ButtonCheck[]> {
+export async function discoverButtons(
+  page: Page,
+  riskyKeywords: readonly string[],
+): Promise<{ buttons: ButtonCheck[]; candidates: ButtonRiskCandidate[] }> {
   const snapshot = await snapshotButtons(page);
-  return snapshot.map((b, index): ButtonCheck => {
+  const buttons = snapshot.map((b, index): ButtonCheck => {
     const base = { index, label: b.label, selector: b.selector };
     const keyword = matchRiskyKeyword(b.label, riskyKeywords);
     if (keyword) {
@@ -85,6 +106,48 @@ export async function discoverButtons(page: Page, riskyKeywords: readonly string
     if (b.disabled) return { ...base, status: 'skipped', skipReason: 'disabled', message: 'Button is disabled.' };
     return { ...base, status: 'not-checked' };
   });
+
+  // Buttons worth showing to a reviewer: the ones we'd click, plus the keyword-skipped ones (for an opinion).
+  const candidates: ButtonRiskCandidate[] = buttons
+    .filter((b) => b.status === 'not-checked' || b.skipReason === 'risky')
+    .map((b) => ({
+      index: b.index,
+      label: b.label,
+      selector: b.selector,
+      context: snapshot[b.index]!.context,
+      ...(b.matchedKeyword ? { keywordMatch: b.matchedKeyword } : {}),
+    }));
+
+  return { buttons, candidates };
+}
+
+/**
+ * Applies a reviewer's verdicts. A reviewer can only ADD skips: a `risky` verdict on a button
+ * we'd click marks it `skipped` (`ai-risky`); on a keyword-skipped button any verdict is only
+ * recorded as an opinion. Verdicts for unknown indexes are ignored. Returns the number of skips added.
+ */
+export function applyRiskVerdicts(
+  buttons: ButtonCheck[],
+  candidates: ButtonRiskCandidate[],
+  verdicts: ButtonRiskVerdict[],
+): number {
+  const allowed = new Set(candidates.map((c) => c.index));
+  let added = 0;
+  for (const v of verdicts) {
+    if (!allowed.has(v.index)) continue;
+    const button = buttons[v.index];
+    if (!button) continue;
+    if (button.skipReason === 'risky') {
+      button.ai = { verdict: v.risky ? 'risky' : 'safe', reason: v.reason };
+    } else if (button.status === 'not-checked' && v.risky) {
+      button.status = 'skipped';
+      button.skipReason = 'ai-risky';
+      button.ai = { verdict: 'risky', reason: v.reason };
+      button.message = `Not clicked: the AI review judged it risky (${v.reason}). Check manually.`;
+      added++;
+    }
+  }
+  return added;
 }
 
 /**
